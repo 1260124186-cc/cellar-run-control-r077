@@ -14,13 +14,13 @@ const (
 )
 
 // Config contains process-level settings that are resolved before any
-// repository or HTTP server is created.
+// repository or HTTP server is created. Per-request timeouts and body
+// limits live in the runtime configuration document so they can change
+// without a restart.
 type Config struct {
 	Address           string
 	DataDir           string
 	ReadHeaderTimeout time.Duration
-	ReadTimeout       time.Duration
-	WriteTimeout      time.Duration
 	IdleTimeout       time.Duration
 	ShutdownTimeout   time.Duration
 }
@@ -30,8 +30,6 @@ func FromEnv() (Config, error) {
 		Address:           valueOrDefault("CELLAR_CONTROL_ADDR", DefaultAddress),
 		DataDir:           valueOrDefault("CELLAR_CONTROL_DATA_DIR", DefaultDataDir),
 		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      20 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		ShutdownTimeout:   10 * time.Second,
 	}
@@ -52,8 +50,8 @@ func (c Config) Validate() (Config, error) {
 		return Config{}, fmt.Errorf("resolve data directory: %w", err)
 	}
 	c.DataDir = filepath.Clean(absolute)
-	if c.ReadHeaderTimeout <= 0 || c.ReadTimeout <= 0 || c.WriteTimeout <= 0 {
-		return Config{}, fmt.Errorf("HTTP timeouts must be positive")
+	if c.ReadHeaderTimeout <= 0 {
+		return Config{}, fmt.Errorf("read header timeout must be positive")
 	}
 	if c.IdleTimeout <= 0 || c.ShutdownTimeout <= 0 {
 		return Config{}, fmt.Errorf("idle and shutdown timeouts must be positive")

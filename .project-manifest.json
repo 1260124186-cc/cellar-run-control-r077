@@ -24,9 +24,19 @@
       "responsibility": "entities, validation, state transitions, and metrics"
     },
     {
+      "id": "logging",
+      "path": "internal/logging",
+      "responsibility": "runtime-switchable leveled logger with request-pinned thresholds"
+    },
+    {
+      "id": "runtimeconfig",
+      "path": "internal/runtimeconfig",
+      "responsibility": "versioned operational parameters with durable current/previous editions"
+    },
+    {
       "id": "service",
       "path": "internal/service",
-      "responsibility": "orchestrate formulas, vessels, runs, and observations"
+      "responsibility": "orchestrate formulas, vessels, runs, observations, and configuration publication"
     },
     {
       "id": "storage",
@@ -36,7 +46,7 @@
     {
       "id": "httpapi",
       "path": "internal/httpapi",
-      "responsibility": "route HTTP requests and map protocol errors"
+      "responsibility": "route HTTP requests, pin one configuration revision per request, and map protocol errors"
     },
     {
       "id": "workflowcheck",
@@ -112,6 +122,28 @@
         "service",
         "domain",
         "storage"
+      ]
+    },
+    {
+      "id": "runtime-config-publish",
+      "name": "Publish, inspect, roll back, and recover runtime configuration",
+      "entry": "POST /v1/runtime-config/publish",
+      "steps": [
+        "read the built-in current edition and confirm rollback is unavailable",
+        "publish a new edition pinned with an expected revision",
+        "verify a concurrent stale publish is rejected without changing state",
+        "reject invalid values and oversized bodies under the new limit",
+        "roll back to the previous edition and verify persisted history",
+        "reopen the store to confirm restart recovery of a confirmed edition only"
+      ],
+      "success": "returns the confirmed edition with the prior edition retained and one revision pinned per request",
+      "failure": "returns stable revision, validation, or no-previous errors without overwriting the confirmed edition",
+      "verification": "the check issues real HTTP requests, inspects the persisted document, and reopens the store",
+      "module_ids": [
+        "httpapi",
+        "service",
+        "runtimeconfig",
+        "logging"
       ]
     }
   ]

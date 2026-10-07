@@ -7,6 +7,8 @@ import (
 
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/clock"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/httpapi"
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/logging"
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/runtimeconfig"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/service"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/storage"
 )
@@ -22,8 +24,12 @@ func Run(name string) error {
 	if err != nil {
 		return err
 	}
-	app := service.New(store, clock.System{})
-	server := httptest.NewServer(httpapi.NewHandler(app))
+	runtimeStore, err := runtimeconfig.Open(dataDir)
+	if err != nil {
+		return err
+	}
+	app := service.New(store, clock.System{}, runtimeStore, logging.Discard())
+	server := httptest.NewServer(httpapi.NewHandler(app, nil))
 	defer server.Close()
 	api := newClient(server.URL)
 
@@ -38,6 +44,10 @@ func Run(name string) error {
 		}
 	case "observations-completion":
 		if err := observationsCompletion(api); err != nil {
+			return err
+		}
+	case "runtime-config-publish":
+		if err := runtimeConfigPublish(api, dataDir); err != nil {
 			return err
 		}
 	default:

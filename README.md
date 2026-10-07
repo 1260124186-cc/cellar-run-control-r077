@@ -5,6 +5,11 @@ production cellar. It keeps formula approval, vessel availability, active
 fermentation runs, gravity observations, conditioning, completion metrics, and
 vessel cleaning in one deterministic process.
 
+Operational parameters shared by the day and night shifts — per-request
+timeout, log level, and request body limit — can be published at runtime by a
+shift supervisor, inspected, and rolled back to the previous confirmed
+edition, without restarting the service.
+
 This repository is a healthy initialization baseline. It has no intentional
 defects and no automated test suite. Tests are intentionally deferred to a
 later engineering task; the production workflow checks in this repository
@@ -53,7 +58,9 @@ cmd/fermentctl                 service and workflow-check executable
 internal/clock                 time boundary
 internal/config                environment configuration
 internal/domain                entities, validation, transitions, metrics
-internal/httpapi               HTTP routes, JSON decoding, errors
+internal/httpapi               HTTP routes, request-level config pinning, errors
+internal/logging               runtime-switchable leveled logger
+internal/runtimeconfig         versioned runtime parameters and rollback history
 internal/service               use-case orchestration
 internal/storage               revisioned snapshot persistence
 internal/workflowcheck         real HTTP production checks
@@ -94,6 +101,66 @@ Run workflow:
 - `POST /v1/runs/{id}/complete`
 - `POST /v1/runs/{id}/abort`
 
+Runtime configuration workflow:
+
+- `GET /v1/runtime-config`
+- `POST /v1/runtime-config/publish`
+- `POST /v1/runtime-config/rollback`
+
+`GET /v1/runtime-config` returns the active edition and, when present, the
+edition immediately preceding it:
+
+```json
+{
+  "current": {
+    "revision": 2,
+    "request_timeout_seconds": 10,
+    "max_request_body_bytes": 1048576,
+    "log_level": "debug",
+    "note": "night shift",
+    "published_at": "2026-10-07T22:10:00Z"
+  },
+  "previous": {
+    "revision": 1,
+    "request_timeout_seconds": 20,
+    "max_request_body_bytes": 1048576,
+    "log_level": "info",
+    "note": "built-in defaults",
+    "published_at": "2026-10-07T20:00:00Z"
+  }
+}
+```
+
+Publish a complete edition (optionally pinning the expected current revision
+with `X-Expected-Version` to guard against concurrent supervisors):
+
+```bash
+curl -sS -X POST http://127.0.0.1:8088/v1/runtime-config/publish \
+  -H 'X-Expected-Version: 1' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "request_timeout_seconds": 10,
+    "max_request_body_bytes": 1048576,
+    "log_level": "debug",
+    "note": "night shift"
+  }'
+```
+
+Field bounds are 1–3600 seconds, 1024–16 MiB, and log levels `debug`,
+`info`, `warn`, `error`. Roll back to the previous confirmed edition with an
+optional body and an optional revision pin:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8088/v1/runtime-config/rollback \
+  -H 'X-Expected-Version: 2' \
+  -H 'Content-Type: application/json' \
+  -d '{"note": "restore day parameters"}'
+```
+
+Every response carries `X-Runtime-Config-Revision`. A request sees exactly
+the edition active when it started: its timeout, body limit, and log level do
+not change even if a publish commits while the request is running.
+
 Writes accept an optional `X-Expected-Version` header. Errors use a stable
 shape:
 
@@ -115,6 +182,7 @@ Run each production workflow check separately:
 go run ./cmd/fermentctl check formula-approval
 go run ./cmd/fermentctl check vessel-run-lifecycle
 go run ./cmd/fermentctl check observations-completion
+go run ./cmd/fermentctl check runtime-config-publish
 ```
 
 Each check creates a temporary snapshot directory, starts the real HTTP
@@ -124,10 +192,19 @@ failure behavior, and removes its temporary data.
 ## Persistence And Recovery
 
 The service stores a complete revisioned snapshot at
-`<data-directory>/state.json`. A write creates a temporary file in the same
-directory, commits the encoded bytes durably, closes the handle, and renames
-the result over the previous snapshot. The in-memory snapshot is replaced only
-after that operation succeeds.
+`<data-directory>/state.json` and the operational parameter document at
+`<data-directory>/runtime-config.json`. Either write creates a temporary file
+in the same directory, commits the encoded bytes durably, closes the handle,
+and renames the result over the previous file. The in-memory state is replaced
+only after that operation succeeds.
+
+A failed configuration publication cannot overwrite the previous edition:
+validation, stale revision checks, encoding, and disk errors all occur before
+the atomic rename. The runtime configuration document always contains the
+confirmed current edition and, when one exists, the immediately preceding
+edition. On startup the document and its revision chain are decoded and
+validated; an invalid document stops the process before HTTP serving begins
+rather than serving unverified parameters.
 
 On startup, an existing snapshot is decoded and normalized. Unknown or
 conflicting map indexes are not silently invented; invalid JSON or a negative

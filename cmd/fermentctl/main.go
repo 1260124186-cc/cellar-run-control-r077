@@ -13,6 +13,8 @@ import (
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/clock"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/config"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/httpapi"
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/logging"
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/runtimeconfig"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/service"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/storage"
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/workflowcheck"
@@ -61,13 +63,23 @@ func serve() error {
 	if err != nil {
 		return err
 	}
-	app := service.New(store, clock.System{})
+	runtimeStore, err := runtimeconfig.Open(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	active := runtimeStore.CurrentView()
+	logger := logging.New(os.Stdout, logging.Level(active.LogLevel))
+	logger.Infof("runtime configuration loaded: revision=%d timeout=%s body_limit=%d level=%s",
+		active.Revision, active.RequestTimeout, active.MaxRequestBodyBytes, active.LogLevel)
+
+	app := service.New(store, clock.System{}, runtimeStore, logger)
+	app.OnRuntimeConfigChange(func(view runtimeconfig.View) {
+		logger.SetLevel(logging.Level(view.LogLevel))
+	})
 	server := &http.Server{
 		Addr:              cfg.Address,
-		Handler:           httpapi.NewHandler(app),
+		Handler:           httpapi.NewHandler(app, logger),
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
-		ReadTimeout:       cfg.ReadTimeout,
-		WriteTimeout:      cfg.WriteTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
 	}
 

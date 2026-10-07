@@ -18,6 +18,10 @@ deferred to a later engineering task.
   starts fermentation.
 - Fermentation observer: appends timestamped gravity observations and moves a
   run through conditioning and completion.
+- Cellar shift supervisor: publishes runtime operational parameters (request
+  timeout, log level, request body limit), inspects the active edition, and
+  rolls back to the previous confirmed edition without restarting the
+  service.
 - Integration client: calls the stable JSON API from a local production script.
 
 ## Entities
@@ -150,6 +154,45 @@ transitions return stable failures without changing persisted state.
 This path crosses HTTP protocol handling, application orchestration, numeric
 domain rules, and snapshot storage.
 
+### 4. Runtime Configuration Publication
+
+Public entry points are:
+
+- `GET /v1/runtime-config`
+- `POST /v1/runtime-config/publish`
+- `POST /v1/runtime-config/rollback`
+
+The day and night shifts share one set of operational parameters: the
+per-request timeout, the log level threshold, and the request body size
+limit. A supervisor publishes a complete edition while the service keeps
+running. The response reports the newly confirmed edition and the edition
+immediately preceding it. Rollback is possible only while a previous
+confirmed edition exists; rollback itself commits a new edition carrying the
+previous parameters, so the two most recent parameter sets can be toggled.
+
+Publishing accepts the same optimistic `X-Expected-Version` pinning as other
+writes. Two supervisors publishing concurrently cannot clobber each other:
+the stale publisher receives a revision conflict and the confirmed edition is
+untouched. Invalid field ranges are rejected before any disk write.
+
+Each HTTP request captures exactly one immutable configuration view at entry.
+The pinned revision governs its timeout, body limit, and log level for the
+whole request, even when a publish commits while the request is in flight.
+Every response carries an `X-Runtime-Config-Revision` header identifying that
+revision.
+
+Persistence is a single commit point: the candidate document is encoded to a
+sibling temporary file, flushed, closed, and atomically renamed over
+`runtime-config.json`. A failure before the rename leaves both the on-disk
+and in-memory confirmed editions unchanged; a failed publication never
+overwrites the previous edition. On restart the service loads and validates
+the confirmed document, including the previous-revision chain, and serves
+only a fully valid edition.
+
+This path crosses HTTP protocol handling and middleware, use-case
+orchestration, parameter validation, durable atomic storage, and the
+process-wide log threshold.
+
 ## Modules
 
 - `cmd/fermentctl`: executable entry point for the HTTP service and bounded
@@ -157,9 +200,14 @@ domain rules, and snapshot storage.
 - `internal/config`: environment and command-line configuration.
 - `internal/clock`: deterministic clock boundary for production and checks.
 - `internal/domain`: entities, validation, state transitions, and metrics.
+- `internal/logging`: leveled logger with a runtime-switchable threshold and
+  request-pinned bound loggers.
+- `internal/runtimeconfig`: versioned parameter document, validation,
+  current/previous history, rollback, and atomic persistence.
 - `internal/service`: use-case orchestration and revision coordination.
 - `internal/storage`: snapshot repository, atomic replacement, and locking.
-- `internal/httpapi`: routing, strict JSON decoding, error mapping, and health.
+- `internal/httpapi`: routing, request-level configuration pinning, strict
+  JSON decoding, error mapping, and health.
 - `internal/workflowcheck`: real HTTP workflow checks used by the executable.
 
 The dependency direction is:
@@ -167,6 +215,12 @@ The dependency direction is:
 `cmd -> workflowcheck/httpapi -> service -> domain`
 
 `service -> storage`
+
+`service -> runtimeconfig`
+
+`httpapi -> runtimeconfig`
+
+`service/httpapi -> logging`
 
 `storage -> domain`
 
@@ -187,20 +241,28 @@ updated aggregate and its version. A failed write returns:
 ```
 
 Write requests may include `X-Expected-Version`. When present, the service
-rejects a stale write instead of overwriting newer state.
+rejects a stale write instead of overwriting newer state. Runtime
+configuration publication and rollback use the same revision pinning.
 
-`GET /healthz` returns process health and the current snapshot revision.
+Every response carries `X-Runtime-Config-Revision`, identifying the immutable
+configuration edition the request was pinned to at entry.
+
+`GET /healthz` returns process health, the current snapshot revision, and the
+active runtime configuration revision.
 
 ## Persistence And Concurrency
 
-The configured data directory contains `state.json`. Writes are serialized by
-an in-process mutex. The complete state is encoded, committed to durable
-storage, and then atomically renamed over the target. An update is not
-published in memory unless persistence succeeds.
+The configured data directory contains `state.json` and
+`runtime-config.json`. Writes to either file are serialized by an in-process
+mutex. The complete document is encoded, committed to durable storage, and
+then atomically renamed over the target. An update is not published in memory
+unless persistence succeeds, so a disk failure mid-publication leaves the
+previous confirmed edition active in memory and on disk.
 
 Reads use copied values and never expose repository-owned maps or slices. The
-default address is `127.0.0.1:8088`, the request body limit is 1 MiB, and all
-workflow checks use temporary directories.
+default address is `127.0.0.1:8088`, the default request body limit is 1 MiB
+until a supervisor changes it at runtime, and all workflow checks use
+temporary directories.
 
 ## Validation Plan
 
@@ -210,13 +272,14 @@ task owns systematic tests for validation boundaries, state transitions,
 numeric calculations, stale revisions, storage failures, and concurrent
 reservation attempts.
 
-The current build command is `go build ./...`. Three bounded production checks
+The current build command is `go build ./...`. Four bounded production checks
 start the real HTTP handler, issue real JSON requests, check success and failure
 behavior, and exit without external services:
 
 - `go run ./cmd/fermentctl check formula-approval`
 - `go run ./cmd/fermentctl check vessel-run-lifecycle`
 - `go run ./cmd/fermentctl check observations-completion`
+- `go run ./cmd/fermentctl check runtime-config-publish`
 
 ## Scope Limits
 

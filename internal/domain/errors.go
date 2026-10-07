@@ -22,6 +22,7 @@ const (
 	CodeRunState            Code = "invalid_run_state"
 	CodeObservationConflict Code = "observation_conflict"
 	CodeRevisionConflict    Code = "revision_conflict"
+	CodeConfigNoPrevious    Code = "no_previous_config"
 	CodeStorage             Code = "storage_error"
 )
 
