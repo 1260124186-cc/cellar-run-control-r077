@@ -17,6 +17,7 @@ type client struct {
 
 type response struct {
 	status int
+	header http.Header
 	body   []byte
 }
 
@@ -62,7 +63,11 @@ func (c *client) call(
 	if err != nil {
 		return response{}, fmt.Errorf("read response: %w", err)
 	}
-	return response{status: raw.StatusCode, body: content}, nil
+	return response{status: raw.StatusCode, header: raw.Header, body: content}, nil
+}
+
+func (r response) headerValue(key string) string {
+	return r.header.Get(key)
 }
 
 func (r response) decode(target any) error {

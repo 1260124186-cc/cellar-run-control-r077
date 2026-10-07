@@ -11,13 +11,24 @@ func NewHandler(app *service.Service) http.Handler {
 	registerFormulaRoutes(mux, app)
 	registerVesselRoutes(mux, app)
 	registerRunRoutes(mux, app)
+	registerRuntimeConfigRoutes(mux, app)
 	mux.HandleFunc("GET /healthz", func(response http.ResponseWriter, _ *http.Request) {
 		writeJSON(response, http.StatusOK, map[string]any{
-			"status":   "ok",
-			"revision": app.Revision(),
+			"status":                 "ok",
+			"revision":               app.Revision(),
+			"runtime_config_version": app.CurrentRuntimeConfig().Version,
 		})
 	})
-	return withRecovery(mux)
+
+	// The pinning middleware is outermost so every layer below reads the same
+	// committed version for the whole request lifetime.
+	limiter := &inFlightLimiter{}
+	handler := http.Handler(withRequestLimit(limiter, mux))
+	handler = withRequestTimeout(handler)
+	handler = withRequestLogging(handler)
+	handler = withRecovery(handler)
+	handler = withRuntimeConfigPinning(app, handler)
+	return handler
 }
 
 func withRecovery(next http.Handler) http.Handler {

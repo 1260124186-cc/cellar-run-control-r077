@@ -97,6 +97,21 @@ time, gravity, temperature, optional note, and receipt time.
 - Gravity must not rise more than 0.010 above the immediately preceding value.
 - Observation sequences are contiguous and start at 1.
 
+### RuntimeConfigVersion
+
+A runtime config version contains a monotonically increasing version number,
+a complete parameter set (request timeout in milliseconds, log level, maximum
+in-flight requests), publication time, an optional publisher label, and an
+optional rollback marker.
+
+- Request timeout is in the inclusive range 100 to 60000 milliseconds.
+- Log level is one of `debug`, `info`, `warn`, `error`.
+- Maximum in-flight requests is in the inclusive range 1 to 1024.
+- Committed versions are append-only and contiguous; the current version is
+  always the latest committed entry.
+- A rollback commits the previous version's parameters as a new version.
+- Each request observes exactly one pinned version from start to end.
+
 ## Connected Workflows
 
 ### 1. Formula Approval
@@ -150,6 +165,24 @@ transitions return stable failures without changing persisted state.
 This path crosses HTTP protocol handling, application orchestration, numeric
 domain rules, and snapshot storage.
 
+### 4. Runtime Config Publishing
+
+Public entry points are:
+
+- `GET /v1/runtime-config`
+- `GET /v1/runtime-config/versions`
+- `POST /v1/runtime-config/publish`
+- `POST /v1/runtime-config/rollback`
+
+The supervisor reads the effective version, publishes a complete parameter set
+as a new committed version, and rolls back to the previous version. Invalid
+ranges, stale expected versions, concurrent publishers, and mid-publish disk
+failures return stable errors without replacing the last confirmed version. A
+restart always recovers the last confirmed version.
+
+This path crosses HTTP protocol handling, application orchestration, atomic
+durable publication, and per-request version pinning.
+
 ## Modules
 
 - `cmd/fermentctl`: executable entry point for the HTTP service and bounded
@@ -202,6 +235,14 @@ Reads use copied values and never expose repository-owned maps or slices. The
 default address is `127.0.0.1:8088`, the request body limit is 1 MiB, and all
 workflow checks use temporary directories.
 
+Runtime configuration lives in `runtime-config.json` next to `state.json` and
+follows the same commit discipline: encode to a temporary file, commit bytes,
+atomically rename, and publish to memory only after persistence succeeds. A
+failed publish leaves the previously confirmed version untouched, and startup
+loads only a fully committed version history. Each request pins the current
+version at arrival; the in-flight limit, request timeout, and request log
+level all read that pinned copy.
+
 ## Validation Plan
 
 The baseline declares `testing: deferred` and intentionally contains no unit
@@ -217,6 +258,7 @@ behavior, and exit without external services:
 - `go run ./cmd/fermentctl check formula-approval`
 - `go run ./cmd/fermentctl check vessel-run-lifecycle`
 - `go run ./cmd/fermentctl check observations-completion`
+- `go run ./cmd/fermentctl check runtime-config-publishing`
 
 ## Scope Limits
 

@@ -9,15 +9,19 @@ import (
 )
 
 type Service struct {
-	store *storage.Store
-	clock clock.Clock
+	store   *storage.Store
+	configs *storage.RuntimeConfigStore
+	clock   clock.Clock
 }
 
-func New(store *storage.Store, timeSource clock.Clock) *Service {
+func New(store *storage.Store, timeSource clock.Clock, configs *storage.RuntimeConfigStore) *Service {
 	if timeSource == nil {
 		timeSource = clock.System{}
 	}
-	return &Service{store: store, clock: timeSource}
+	if configs == nil {
+		configs = storage.NewEphemeralRuntimeConfigStore()
+	}
+	return &Service{store: store, configs: configs, clock: timeSource}
 }
 
 func (s *Service) Revision() int64 {

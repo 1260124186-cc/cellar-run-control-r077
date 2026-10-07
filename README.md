@@ -94,6 +94,13 @@ Run workflow:
 - `POST /v1/runs/{id}/complete`
 - `POST /v1/runs/{id}/abort`
 
+Runtime config workflow:
+
+- `GET /v1/runtime-config`
+- `GET /v1/runtime-config/versions`
+- `POST /v1/runtime-config/publish`
+- `POST /v1/runtime-config/rollback`
+
 Writes accept an optional `X-Expected-Version` header. Errors use a stable
 shape:
 
@@ -107,6 +114,47 @@ shape:
 }
 ```
 
+## Runtime Config Publishing
+
+The request timeout, log level, and in-flight request limit are runtime
+parameters that supervisors can republish without restarting the service.
+Parameters are published as a complete set:
+
+```json
+{
+  "config": {
+    "request_timeout_ms": 1500,
+    "log_level": "debug",
+    "max_in_flight_requests": 8
+  },
+  "published_by": "night-lead"
+}
+```
+
+`POST /v1/runtime-config/publish` validates the set and commits it as the next
+version (`201`). `GET /v1/runtime-config` returns the currently effective
+version and the rollback target; `GET /v1/runtime-config/versions` lists the
+committed history. `POST /v1/runtime-config/rollback` commits the previous
+version's parameters as a new version, so history stays append-only. Publishes
+accept `X-Expected-Version`; a second supervisor publishing against a stale
+version receives `revision_conflict` instead of overwriting the winner.
+
+Guarantees:
+
+- Each request pins one committed version at arrival and observes only that
+  version for its whole lifetime. Responses carry the pinned version in the
+  `X-Runtime-Config-Version` header.
+- A publish becomes effective only after it is durably committed
+  (temporary file, fsync, atomic rename). A mid-publish disk failure returns
+  `storage_error` and leaves the previously confirmed version in place.
+- A restart always recovers the last confirmed version; a failed publish is
+  never recovered.
+
+The pinned version is enforced per request: the in-flight limit rejects with
+`429 request_limit_exceeded`, an exceeded request timeout fails with
+`503 request_timeout`, and request logging follows the pinned log level
+(`debug`/`info` log every request, `warn` logs 4xx/5xx, `error` logs 5xx).
+
 ## Workflow Checks
 
 Run each production workflow check separately:
@@ -115,6 +163,7 @@ Run each production workflow check separately:
 go run ./cmd/fermentctl check formula-approval
 go run ./cmd/fermentctl check vessel-run-lifecycle
 go run ./cmd/fermentctl check observations-completion
+go run ./cmd/fermentctl check runtime-config-publishing
 ```
 
 Each check creates a temporary snapshot directory, starts the real HTTP
@@ -132,6 +181,14 @@ after that operation succeeds.
 On startup, an existing snapshot is decoded and normalized. Unknown or
 conflicting map indexes are not silently invented; invalid JSON or a negative
 revision stops the process before HTTP serving begins.
+
+Runtime configuration lives in `<data-directory>/runtime-config.json` and
+follows the same commit discipline: the append-only version history is encoded
+to a temporary file, committed durably, and atomically renamed over the
+previous file. The in-memory state changes only after persistence succeeds, so
+a failed publish never replaces the confirmed version. On startup the service
+loads the committed history; a missing file is initialized with the built-in
+default version, and a corrupt or inconsistent history stops the process.
 
 ## Repair-Ready Boundaries
 

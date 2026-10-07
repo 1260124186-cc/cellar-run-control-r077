@@ -113,6 +113,27 @@
         "domain",
         "storage"
       ]
+    },
+    {
+      "id": "runtime-config-publishing",
+      "name": "Publish, view, roll back, and recover runtime configuration",
+      "entry": "POST /v1/runtime-config/publish",
+      "steps": [
+        "read the effective runtime config version",
+        "publish a validated parameter set as a new committed version",
+        "reject stale expected versions and concurrent publishers",
+        "roll back to the previous committed version",
+        "survive a failed publish and restart on the last confirmed version"
+      ],
+      "success": "returns the committed version and serves every request with one pinned version",
+      "failure": "returns stable validation, conflict, or storage errors without replacing the confirmed version",
+      "verification": "the check issues real HTTP requests, injects a disk failure, and reopens the store",
+      "module_ids": [
+        "httpapi",
+        "service",
+        "domain",
+        "storage"
+      ]
     }
   ]
 }

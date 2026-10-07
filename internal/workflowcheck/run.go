@@ -22,7 +22,11 @@ func Run(name string) error {
 	if err != nil {
 		return err
 	}
-	app := service.New(store, clock.System{})
+	configStore, err := storage.OpenRuntimeConfig(dataDir)
+	if err != nil {
+		return err
+	}
+	app := service.New(store, clock.System{}, configStore)
 	server := httptest.NewServer(httpapi.NewHandler(app))
 	defer server.Close()
 	api := newClient(server.URL)
@@ -38,6 +42,10 @@ func Run(name string) error {
 		}
 	case "observations-completion":
 		if err := observationsCompletion(api); err != nil {
+			return err
+		}
+	case "runtime-config-publishing":
+		if err := runtimeConfigPublishing(api, dataDir); err != nil {
 			return err
 		}
 	default:

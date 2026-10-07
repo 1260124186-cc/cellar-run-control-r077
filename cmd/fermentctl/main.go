@@ -61,7 +61,11 @@ func serve() error {
 	if err != nil {
 		return err
 	}
-	app := service.New(store, clock.System{})
+	configStore, err := storage.OpenRuntimeConfig(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	app := service.New(store, clock.System{}, configStore)
 	server := &http.Server{
 		Addr:              cfg.Address,
 		Handler:           httpapi.NewHandler(app),
